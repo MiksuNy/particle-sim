@@ -1,3 +1,4 @@
+mod game;
 mod logger;
 mod math;
 mod renderer;

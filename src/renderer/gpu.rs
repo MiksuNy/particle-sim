@@ -1,4 +1,32 @@
-use crate::log_info;
+use crate::{game::Particle, log_info};
+
+mod util;
+
+fn create_compute_pipeline(
+    device: &wgpu::Device,
+    label: Option<&str>,
+    shader_module: &wgpu::ShaderModule,
+    shader_module_entry_point: Option<&str>,
+    bind_group_layouts: &[Option<&wgpu::BindGroupLayout>],
+    immediate_size: u32,
+) -> wgpu::ComputePipeline {
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label,
+        bind_group_layouts,
+        immediate_size,
+    });
+
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: None,
+        layout: Some(&pipeline_layout),
+        module: shader_module,
+        entry_point: shader_module_entry_point,
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    return pipeline;
+}
 
 pub struct GpuState {
     pub instance: wgpu::Instance,
@@ -11,10 +39,12 @@ pub struct GpuState {
     pub rc_compute_pipeline: wgpu::ComputePipeline,
     pub merge_compute_pipeline: wgpu::ComputePipeline,
     pub final_compute_pipeline: wgpu::ComputePipeline,
-    pub pp_texture: (wgpu::Texture, wgpu::TextureView),
+    pub pp_texture: wgpu::Texture,
     pub pp_bind_group_layout: wgpu::BindGroupLayout,
     pub pp_bind_group: wgpu::BindGroup,
     pub pp_compute_pipeline: wgpu::ComputePipeline,
+    pub particle_storage_buffer: util::Buffer,
+    pub world_bind_group: wgpu::BindGroup,
 }
 
 impl GpuState {
@@ -74,52 +104,63 @@ impl GpuState {
             entries: &[cascade_textures_bind_group_entry.clone()],
         });
 
+        let particle_storage_buffer = util::Buffer::create_with_data::<GpuParticle>(
+            &device,
+            &queue,
+            util::BufferCreateInfo {
+                label: None,
+                binding: 0,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                buffer_binding_type: wgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                count: None,
+            },
+            &[],
+            32,
+        );
+
+        let world_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[particle_storage_buffer.bind_group_layout_entry],
+            });
+        let world_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &world_bind_group_layout,
+            entries: &[particle_storage_buffer.bind_group_entry()],
+        });
+
         let rc_shader_module =
             device.create_shader_module(wgpu::include_wgsl!("../../res/shaders/rc.wgsl"));
-        let rc_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[Some(&cascades_bind_group_layout)],
-            immediate_size: 12,
-        });
-        let rc_compute_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: Some(&rc_pipeline_layout),
-                module: &rc_shader_module,
-                entry_point: Some("gen_cascades"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
-        let merge_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&cascades_bind_group_layout)],
-                immediate_size: 12,
-            });
-        let merge_compute_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: Some(&merge_pipeline_layout),
-                module: &rc_shader_module,
-                entry_point: Some("merge_cascades"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
-        let final_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: None,
-                bind_group_layouts: &[Some(&cascades_bind_group_layout)],
-                immediate_size: 0,
-            });
-        let final_compute_pipeline =
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: None,
-                layout: Some(&final_pipeline_layout),
-                module: &rc_shader_module,
-                entry_point: Some("final_pass"),
-                compilation_options: Default::default(),
-                cache: None,
-            });
+
+        let rc_compute_pipeline = create_compute_pipeline(
+            &device,
+            None,
+            &rc_shader_module,
+            Some("gen_cascades"),
+            &[
+                Some(&cascades_bind_group_layout),
+                Some(&world_bind_group_layout),
+            ],
+            12,
+        );
+        let merge_compute_pipeline = create_compute_pipeline(
+            &device,
+            None,
+            &rc_shader_module,
+            Some("merge_cascades"),
+            &[Some(&cascades_bind_group_layout)],
+            12,
+        );
+        let final_compute_pipeline = create_compute_pipeline(
+            &device,
+            None,
+            &rc_shader_module,
+            Some("final_pass"),
+            &[Some(&cascades_bind_group_layout)],
+            0,
+        );
 
         let pp_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: None,
@@ -137,7 +178,6 @@ impl GpuState {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let pp_texture_view = pp_texture.create_view(&Default::default());
         let pp_texture_bind_group_layout_entry = wgpu::BindGroupLayoutEntry {
             binding: 1,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -146,11 +186,13 @@ impl GpuState {
                 format: wgpu::TextureFormat::Rgba16Unorm,
                 view_dimension: wgpu::TextureViewDimension::D2,
             },
-            count: std::num::NonZeroU32::new(cascade_textures.len() as u32),
+            count: None,
         };
         let pp_texture_bind_group_entry = wgpu::BindGroupEntry {
             binding: 1,
-            resource: wgpu::BindingResource::TextureView(&pp_texture_view),
+            resource: wgpu::BindingResource::TextureView(
+                &pp_texture.create_view(&Default::default()),
+            ),
         };
         let pp_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -196,10 +238,12 @@ impl GpuState {
             rc_compute_pipeline,
             merge_compute_pipeline,
             final_compute_pipeline,
-            pp_texture: (pp_texture, pp_texture_view),
+            pp_texture,
             pp_bind_group_layout,
             pp_bind_group,
             pp_compute_pipeline,
+            particle_storage_buffer,
+            world_bind_group,
         };
     }
 
@@ -241,5 +285,25 @@ impl GpuState {
             trace: wgpu::Trace::Off,
         }))
         .expect("Failed to create device");
+    }
+}
+
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+#[repr(C, align(16))]
+pub struct GpuParticle {
+    color: glam::Vec4,
+    pos: glam::Vec2,
+    radius: f32,
+    _pad: [u8; 4],
+}
+
+impl From<&Particle> for GpuParticle {
+    fn from(value: &Particle) -> Self {
+        Self {
+            color: value.color,
+            pos: value.pos,
+            radius: value.radius,
+            _pad: [0; 4],
+        }
     }
 }

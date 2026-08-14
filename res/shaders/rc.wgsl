@@ -1,12 +1,21 @@
 enable wgpu_binding_array;
 
 const PI = 3.1415926535f;
-const BASE_INTERVAL_LENGTH = 0.5f;
+const BASE_INTERVAL_LENGTH = 1.0f;
 
 @group(0) @binding(0)
 var cascade_textures: binding_array<texture_storage_2d<rgba32float, read_write>, 16>;
 
+@group(1) @binding(0)
+var<storage> particles: array<Particle>;
+
 var<immediate> immediates: Immediates;
+
+struct Particle {
+    color: vec4<f32>,
+    pos: vec2<f32>,
+    radius: f32
+}
 
 struct Immediates {
     cascade_index: u32,
@@ -79,43 +88,19 @@ fn merge_cascades(@builtin(global_invocation_id) global_id: vec3<u32>) {
     textureStore(cascade_textures[immediates.cascade_index], global_id.xy, merged);
 }
 
-// Bilinearly interpolate 4 nearest cascade 0 probes
+// Bilinearly interpolate cascade 0 probes
 @compute @workgroup_size(8u, 8u, 1u)
 fn final_pass(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let dest_size = vec2<u32>(1u, 1u);
-    let dest_coord = global_id.xy % dest_size;
-    let dest_center = vec2<f32>(global_id.xy - dest_coord) + vec2<f32>(dest_size) * 0.5f;
+    let ratio = vec2<f32>(0.5f);
+    let weights = bilinear_weights(ratio);
 
-    let dir_index = dest_coord.y * dest_size.x + dest_coord.x;
+    var radiance = vec4<f32>(0.0f);
+    radiance += textureLoad(cascade_textures[0u], global_id.xy + bilinear_offset(0u)) * weights[0u];
+    radiance += textureLoad(cascade_textures[0u], global_id.xy + bilinear_offset(1u)) * weights[1u];
+    radiance += textureLoad(cascade_textures[0u], global_id.xy + bilinear_offset(2u)) * weights[2u];
+    radiance += textureLoad(cascade_textures[0u], global_id.xy + bilinear_offset(3u)) * weights[3u];
 
-    let bilinear_size = vec2<f32>(dest_size);
-    var weights: vec4<f32>;
-    var base_index: vec2<u32>;
-    bilinear_samples(dest_center, bilinear_size, &weights, &base_index);
-
-    let dest_interval = textureLoad(cascade_textures[0u], global_id.xy);
-
-    var merged = vec4<f32>(0.0f);
-    for (var d = 0u; d < 4u; d++) {
-        var radiance = vec4<f32>(0.0f);
-        for (var b = 0u; b < 4u; b++) {
-            let base_offset = bilinear_offset(b);
-            let bilinear_index = base_index + base_offset;
-            let base_dir_index = dir_index;
-            let bilinear_dir_index = base_dir_index + d;
-            let bilinear_dir_coord = vec2<u32>(
-                u32(f32(bilinear_dir_index) % bilinear_size.x),
-                u32(f32(bilinear_dir_index) / bilinear_size.x)
-            );
-            let bilinear_texel = vec2<u32>(vec2<f32>(bilinear_index) * bilinear_size + vec2<f32>(bilinear_dir_coord));
-            let bilinear_interval = textureLoad(cascade_textures[0u], bilinear_texel);
-
-            radiance += merge_intervals(dest_interval, bilinear_interval) * weights[b];
-        }
-        merged += radiance / 4.0f;
-    }
-
-    textureStore(cascade_textures[0u], global_id.xy, merged);
+    textureStore(cascade_textures[0u], global_id.xy, radiance);
 }
 
 fn bilinear_weights(ratio: vec2<f32>) -> vec4<f32> {
@@ -128,7 +113,7 @@ fn bilinear_weights(ratio: vec2<f32>) -> vec4<f32> {
 }
 
 fn bilinear_samples(dest_center: vec2<f32>, bilinear_size: vec2<f32>, weights: ptr<function, vec4<f32>>, base_index: ptr<function, vec2<u32>>) {
-    let base_coord = (dest_center / bilinear_size) - vec2<f32>(0.5f, 0.5f);
+    let base_coord = (dest_center / bilinear_size) - vec2<f32>(0.5f);
     let ratio = fract(base_coord);
     *weights = bilinear_weights(ratio);
     *base_index = vec2<u32>(floor(base_coord));
@@ -145,35 +130,21 @@ fn bilinear_offset(offset_index: u32) -> vec2<u32> {
 }
 
 fn cast_interval(interval_start: vec2<f32>, interval_end: vec2<f32>) -> vec4<f32> {
-    const NUM_OBJECTS: u32 = 5u;
-    let objects = array<vec3<f32>, NUM_OBJECTS>(
-        vec3<f32>(320.0f, 320.0f, 30.0f),
-        vec3<f32>(160.0f, 320.0f, 30.0f),
-        vec3<f32>(320.0f, 160.0f, 30.0f),
-        vec3<f32>(160.0f, 160.0f, 30.0f),
-        vec3<f32>(f32(immediates.cursor_x), f32(immediates.cursor_y), 10.0f)
-    );
-    let colors = array<vec4<f32>, NUM_OBJECTS>(
-        vec4<f32>(0.0f, 0.0f, 0.0f, 0.0f),
-        vec4<f32>(0.0f, 0.0f, 0.0f, 0.0f),
-        vec4<f32>(0.0f, 0.0f, 0.0f, 0.0f),
-        vec4<f32>(0.0f, 0.0f, 0.0f, 0.0f),
-        vec4<f32>(0.1f, 0.1f, 0.1f, 0.0f)
-    );
-
-    let t_max = distance(interval_start, interval_end);
+    let t_max = distance(interval_end, interval_start);
     let ray_dir = normalize(interval_end - interval_start);
 
     var radiance = vec4<f32>(0.0f, 0.0f, 0.0f, 1.0f);
 
-    var hit_object_index = 0u;
     var t = 0.0f;
-    for (var i = 0u; i < 64u; i++) {
+    for (var i = 0u; i < 4u; i++) {
         var d = 1e30f;
-        for (var object_index = 0u; object_index < NUM_OBJECTS; object_index++) {
-            let temp_d = sd_sphere(interval_start + ray_dir * t, objects[object_index].xy, objects[object_index].z);
+        var color = vec4<f32>(0.0f);
+        for (var p = 0u; p < arrayLength(&particles); p++) {
+            let particle = particles[p];
+
+            let temp_d = sd_circle(interval_start + ray_dir * t, particle.pos, particle.radius);
             if temp_d < d {
-                hit_object_index = object_index;
+                color = particle.color;
                 d = temp_d;
             }
         }
@@ -185,11 +156,11 @@ fn cast_interval(interval_start: vec2<f32>, interval_end: vec2<f32>) -> vec4<f32
         }
 
         if 0.1f < t && d < 1.0f {
-            radiance.r += colors[hit_object_index].r;
-            radiance.g += colors[hit_object_index].g;
-            radiance.b += colors[hit_object_index].b;
+            radiance.r += color.r;
+            radiance.g += color.g;
+            radiance.b += color.b;
 
-            radiance.a *= colors[hit_object_index].a;
+            radiance.a *= color.a;
             break;
         }
     }
@@ -216,6 +187,15 @@ fn merge_intervals(near: vec4<f32>, far: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(radiance, near.a * far.a);
 }
 
-fn sd_sphere(p: vec2<f32>, c: vec2<f32>, r: f32) -> f32 {
+fn sd_circle(p: vec2<f32>, c: vec2<f32>, r: f32) -> f32 {
     return distance(p, c) - r;
+}
+
+fn sd_oriented_box(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, th: f32) -> f32 {
+    let l = length(b - a);
+    let d = (b - a) / l;
+    var q = p - (a + b) * 0.5f;
+    q = mat2x2<f32>(d.x, -d.y, d.y, d.x) * q;
+    q = abs(q) - vec2<f32>(l * 0.5f, th);
+    return length(max(q, vec2<f32>(0.0f))) + min(max(q.x, q.y), 0.0f);
 }

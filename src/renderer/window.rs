@@ -3,15 +3,20 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc};
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
-    event::WindowEvent,
+    event::{MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop, OwnedDisplayHandle},
     keyboard::PhysicalKey,
     window::Window,
 };
 
-use crate::{log_info, renderer::gpu::GpuState};
+use crate::{
+    game::{Particle, World},
+    log_info,
+    renderer::gpu::{GpuParticle, GpuState},
+};
 
 struct AppState {
+    world: Rc<RefCell<World>>,
     options: Rc<RefCell<AppOptions>>,
     gpu_state: GpuState,
     window: Arc<Window>,
@@ -22,7 +27,7 @@ struct AppState {
     render_pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
     key_states: HashSet<PhysicalKey>,
-    cursor_position: PhysicalPosition<f64>,
+    cursor_position: PhysicalPosition<u32>,
 }
 
 impl AppState {
@@ -149,7 +154,13 @@ impl AppState {
                     cache: None,
                 });
 
+        let world = World::new(glam::Vec2::new(
+            options.window_dimensions.0 as f32,
+            options.window_dimensions.1 as f32,
+        ));
+
         let app = Self {
+            world: Rc::new(RefCell::new(world)),
             options: Rc::new(RefCell::new(options)),
             gpu_state,
             window,
@@ -160,7 +171,7 @@ impl AppState {
             render_pipeline,
             bind_group,
             key_states: HashSet::new(),
-            cursor_position: PhysicalPosition { x: 0.0, y: 0.0 },
+            cursor_position: PhysicalPosition { x: 0, y: 0 },
         };
         app.configure_surface();
         return app;
@@ -213,11 +224,12 @@ impl AppState {
                 timestamp_writes: None,
             });
             rc_pass.set_bind_group(0, &gpu_state.cascades_bind_group, &[]);
+            rc_pass.set_bind_group(1, &gpu_state.world_bind_group, &[]);
             rc_pass.set_pipeline(&gpu_state.rc_compute_pipeline);
             let immediates = [
                 cascade_index.to_le_bytes(),
-                (self.cursor_position.x as u32).to_le_bytes(),
-                (self.cursor_position.y as u32).to_le_bytes(),
+                self.cursor_position.x.to_le_bytes(),
+                self.cursor_position.y.to_le_bytes(),
             ];
             let bytes = immediates.as_flattened();
             rc_pass.set_immediates(0, bytes);
@@ -240,8 +252,8 @@ impl AppState {
             merge_pass.set_pipeline(&gpu_state.merge_compute_pipeline);
             let immediates = [
                 cascade_index.to_le_bytes(),
-                (self.cursor_position.x as u32).to_le_bytes(),
-                (self.cursor_position.y as u32).to_le_bytes(),
+                self.cursor_position.x.to_le_bytes(),
+                self.cursor_position.y.to_le_bytes(),
             ];
             let bytes = immediates.as_flattened();
             merge_pass.set_immediates(0, bytes);
@@ -253,7 +265,7 @@ impl AppState {
         }
 
         // Final pass
-        // Bilinearly interpolate 4 nearest cascade 0 probes
+        // Bilinearly interpolate cascade 0 probes
         {
             let mut final_pass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,
@@ -285,7 +297,7 @@ impl AppState {
 
         // Copy the result of post processing pass to surface texture
         command_encoder.copy_texture_to_texture(
-            gpu_state.pp_texture.0.as_image_copy(),
+            gpu_state.pp_texture.as_image_copy(),
             self.surface_texture.as_image_copy(),
             self.surface_texture.size(),
         );
@@ -336,7 +348,7 @@ impl Default for AppOptions {
 
 #[derive(Default)]
 struct App {
-    app_state: Option<AppState>,
+    state: Option<AppState>,
 }
 
 impl ApplicationHandler for App {
@@ -353,7 +365,7 @@ impl ApplicationHandler for App {
             AppOptions::default(),
         ));
 
-        self.app_state = Some(app_state);
+        self.state = Some(app_state);
 
         window.set_title("Epic 2D particle sim");
 
@@ -372,7 +384,22 @@ impl ApplicationHandler for App {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
-                let app_state = self.app_state.as_mut().unwrap();
+                let app_state = self.state.as_mut().unwrap();
+
+                app_state.world.borrow_mut().update(1.0 / 20.0);
+
+                let gpu_particles: Vec<GpuParticle> = app_state
+                    .world
+                    .borrow_mut()
+                    .particles
+                    .iter()
+                    .map(|particle| particle.into())
+                    .collect();
+                app_state
+                    .gpu_state
+                    .particle_storage_buffer
+                    .set_buffer_data(&app_state.gpu_state.queue, &gpu_particles);
+
                 app_state.render();
                 app_state.get_window().request_redraw();
             }
@@ -380,11 +407,27 @@ impl ApplicationHandler for App {
                 device_id,
                 position,
             } => {
-                let app_state = self.app_state.as_mut().unwrap();
-                app_state.cursor_position = position;
+                let app_state = self.state.as_mut().unwrap();
+                app_state.cursor_position = position.cast();
+            }
+            WindowEvent::MouseInput {
+                device_id,
+                state,
+                button,
+            } => {
+                if button == MouseButton::Left && state.is_pressed() {
+                    let app_state = self.state.as_mut().unwrap();
+                    app_state.world.borrow_mut().add_particle(Particle::new(
+                        glam::Vec2::new(
+                            app_state.cursor_position.x as f32,
+                            app_state.cursor_position.y as f32,
+                        ),
+                        5.0,
+                    ));
+                }
             }
             WindowEvent::Resized(new_size) => {
-                self.app_state.as_mut().unwrap().resize(new_size);
+                self.state.as_mut().unwrap().resize(new_size);
             }
             _ => (),
         }
