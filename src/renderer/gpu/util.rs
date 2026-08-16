@@ -8,6 +8,7 @@ pub struct Buffer {
 
 pub struct BufferCreateInfo<'a> {
     pub label: Option<&'a str>,
+    /// Binding index of the buffer in a bind group
     pub binding: u32,
     pub usage: wgpu::BufferUsages,
     pub visibility: wgpu::ShaderStages,
@@ -46,7 +47,7 @@ impl Buffer {
     /// Creates a buffer with data
     ///
     /// # Notes
-    /// * Usage flags must contain wgpu::BufferUsages::COPY_DST
+    /// * BufferDescriptor usage flags must contain wgpu::BufferUsages::COPY_DST
     pub fn create_with_data<T: bytemuck::Pod>(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -89,4 +90,34 @@ impl Buffer {
     pub fn set_buffer_data<T: bytemuck::Pod>(&self, queue: &wgpu::Queue, data: &[T]) {
         queue.write_buffer(&self.handle, 0, bytemuck::cast_slice(data));
     }
+}
+
+pub struct ComputePipelineCreateInfo<'a> {
+    pub label: Option<&'a str>,
+    pub shader_module: &'a wgpu::ShaderModule,
+    pub entry_point: Option<&'a str>,
+    pub bind_group_layouts: &'a [Option<&'a wgpu::BindGroupLayout>],
+    pub immediate_size: u32,
+}
+
+pub fn create_compute_pipeline(
+    device: &wgpu::Device,
+    create_info: ComputePipelineCreateInfo,
+) -> wgpu::ComputePipeline {
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: create_info.label,
+        bind_group_layouts: create_info.bind_group_layouts,
+        immediate_size: create_info.immediate_size,
+    });
+
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: create_info.label,
+        layout: Some(&pipeline_layout),
+        module: create_info.shader_module,
+        entry_point: create_info.entry_point,
+        compilation_options: Default::default(),
+        cache: None,
+    });
+
+    return pipeline;
 }

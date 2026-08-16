@@ -1,4 +1,4 @@
-use crate::log_info;
+use crate::{log_info, log_warning};
 
 pub struct World {
     pub particles: Vec<Particle>,
@@ -14,25 +14,17 @@ impl World {
     }
 
     pub fn update(&mut self, dt: f32) {
-        // Remove any particles outside of the world
-        self.particles.retain(|particle| {
-            if particle.pos.cmpge(self.extent).any() || particle.pos.cmple(glam::Vec2::ZERO).any() {
-                log_info!("Removed particle from world");
-                return false;
-            } else {
-                return true;
-            }
-        });
-
         // Update all particles
         for i in 0..self.particles.len() {
             for j in 0..self.particles.len() {
                 if i == j {
                     continue;
                 }
+
                 let other = self.particles[j];
                 let particle = &mut self.particles[i];
-                let r_sq = glam::Vec2::distance_squared(particle.pos, other.pos);
+
+                let r_sq = particle.pos.distance_squared(other.pos);
                 let f_g = 6.67430e-11 * particle.mass * other.mass / r_sq;
                 particle.add_force((other.pos - particle.pos) * f_g);
             }
@@ -61,7 +53,7 @@ pub struct Particle {
 impl Particle {
     pub fn new(pos: glam::Vec2, radius: f32) -> Self {
         Self {
-            color: glam::Vec4::new(pos.x / 512.0 * 0.5, pos.y / 512.0 * 0.5, 0.1, 0.0),
+            color: glam::Vec4::new(pos.x / 512.0 * 0.5, pos.y / 512.0 * 0.5, 0.0, 0.0),
             pos,
             old_pos: pos,
             acc: glam::Vec2::ZERO,

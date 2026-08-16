@@ -2,32 +2,6 @@ use crate::{game::Particle, log_info};
 
 mod util;
 
-fn create_compute_pipeline(
-    device: &wgpu::Device,
-    label: Option<&str>,
-    shader_module: &wgpu::ShaderModule,
-    shader_module_entry_point: Option<&str>,
-    bind_group_layouts: &[Option<&wgpu::BindGroupLayout>],
-    immediate_size: u32,
-) -> wgpu::ComputePipeline {
-    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        label,
-        bind_group_layouts,
-        immediate_size,
-    });
-
-    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-        label: None,
-        layout: Some(&pipeline_layout),
-        module: shader_module,
-        entry_point: shader_module_entry_point,
-        compilation_options: Default::default(),
-        cache: None,
-    });
-
-    return pipeline;
-}
-
 pub struct GpuState {
     pub instance: wgpu::Instance,
     pub adapter: wgpu::Adapter,
@@ -134,32 +108,38 @@ impl GpuState {
         let rc_shader_module =
             device.create_shader_module(wgpu::include_wgsl!("../../res/shaders/rc.wgsl"));
 
-        let rc_compute_pipeline = create_compute_pipeline(
+        let rc_compute_pipeline = util::create_compute_pipeline(
             &device,
-            None,
-            &rc_shader_module,
-            Some("gen_cascades"),
-            &[
-                Some(&cascades_bind_group_layout),
-                Some(&world_bind_group_layout),
-            ],
-            12,
+            util::ComputePipelineCreateInfo {
+                label: None,
+                shader_module: &rc_shader_module,
+                entry_point: Some("gen_cascades"),
+                bind_group_layouts: &[
+                    Some(&cascades_bind_group_layout),
+                    Some(&world_bind_group_layout),
+                ],
+                immediate_size: 12,
+            },
         );
-        let merge_compute_pipeline = create_compute_pipeline(
+        let merge_compute_pipeline = util::create_compute_pipeline(
             &device,
-            None,
-            &rc_shader_module,
-            Some("merge_cascades"),
-            &[Some(&cascades_bind_group_layout)],
-            12,
+            util::ComputePipelineCreateInfo {
+                label: None,
+                shader_module: &rc_shader_module,
+                entry_point: Some("merge_cascades"),
+                bind_group_layouts: &[Some(&cascades_bind_group_layout)],
+                immediate_size: 12,
+            },
         );
-        let final_compute_pipeline = create_compute_pipeline(
+        let final_compute_pipeline = util::create_compute_pipeline(
             &device,
-            None,
-            &rc_shader_module,
-            Some("final_pass"),
-            &[Some(&cascades_bind_group_layout)],
-            0,
+            util::ComputePipelineCreateInfo {
+                label: None,
+                shader_module: &rc_shader_module,
+                entry_point: Some("final_pass"),
+                bind_group_layouts: &[Some(&cascades_bind_group_layout)],
+                immediate_size: 0,
+            },
         );
 
         let pp_texture = device.create_texture(&wgpu::TextureDescriptor {
