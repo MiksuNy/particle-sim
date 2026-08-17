@@ -3,9 +3,9 @@ use std::{cell::RefCell, collections::HashSet, rc::Rc, sync::Arc};
 use winit::{
     application::ApplicationHandler,
     dpi::{PhysicalPosition, PhysicalSize},
-    event::{MouseButton, WindowEvent},
+    event::{DeviceEvent, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop, OwnedDisplayHandle},
-    keyboard::PhysicalKey,
+    keyboard::{KeyCode, PhysicalKey},
     window::Window,
 };
 
@@ -217,6 +217,23 @@ impl AppState {
 
         let mut command_encoder = gpu_state.device.create_command_encoder(&Default::default());
 
+        // Generate sdf texture pass
+        {
+            let mut gen_sdf_texture_pass =
+                command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: None,
+                    timestamp_writes: None,
+                });
+            gen_sdf_texture_pass.set_bind_group(0, &gpu_state.cascades_bind_group, &[]);
+            gen_sdf_texture_pass.set_bind_group(1, &gpu_state.world_bind_group, &[]);
+            gen_sdf_texture_pass.set_pipeline(&gpu_state.gen_sdf_compute_pipeline);
+            gen_sdf_texture_pass.dispatch_workgroups(
+                options.window_dimensions.0 / 8,
+                options.window_dimensions.1 / 8,
+                1,
+            );
+        }
+
         // Generate cascades pass
         for cascade_index in 0..options.num_cascades {
             let mut rc_pass = command_encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -410,25 +427,35 @@ impl ApplicationHandler for App {
                 let app_state = self.state.as_mut().unwrap();
                 app_state.cursor_position = position.cast();
             }
-            WindowEvent::MouseInput {
-                device_id,
-                state,
-                button,
-            } => {
-                if button == MouseButton::Left && state.is_pressed() {
-                    let app_state = self.state.as_mut().unwrap();
-                    app_state.world.borrow_mut().add_particle(Particle::new(
-                        glam::Vec2::new(
-                            app_state.cursor_position.x as f32,
-                            app_state.cursor_position.y as f32,
-                        ),
-                        5.0,
-                    ));
-                }
-            }
             WindowEvent::Resized(new_size) => {
                 self.state.as_mut().unwrap().resize(new_size);
             }
+            _ => (),
+        }
+    }
+
+    fn device_event(
+        &mut self,
+        event_loop: &winit::event_loop::ActiveEventLoop,
+        device_id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        match event {
+            DeviceEvent::Key(key) => match key.physical_key {
+                PhysicalKey::Code(KeyCode::Space) => {
+                    if key.state.is_pressed() {
+                        let app_state = self.state.as_mut().unwrap();
+                        app_state.world.borrow_mut().add_particle(Particle::new(
+                            glam::Vec2::new(
+                                app_state.cursor_position.x as f32,
+                                app_state.cursor_position.y as f32,
+                            ),
+                            5.0,
+                        ));
+                    }
+                }
+                _ => (),
+            },
             _ => (),
         }
     }

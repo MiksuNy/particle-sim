@@ -1,5 +1,3 @@
-use crate::{log_info, log_warning};
-
 pub struct World {
     pub particles: Vec<Particle>,
     pub extent: glam::Vec2,
@@ -14,7 +12,6 @@ impl World {
     }
 
     pub fn update(&mut self, dt: f32) {
-        // Update all particles
         for i in 0..self.particles.len() {
             for j in 0..self.particles.len() {
                 if i == j {
@@ -24,7 +21,7 @@ impl World {
                 let other = self.particles[j];
                 let particle = &mut self.particles[i];
 
-                let r_sq = particle.pos.distance_squared(other.pos);
+                let r_sq = f32::max(0.001, particle.pos.distance_squared(other.pos));
                 let f_g = 6.67430e-11 * particle.mass * other.mass / r_sq;
                 particle.add_force((other.pos - particle.pos) * f_g);
             }
@@ -53,7 +50,7 @@ pub struct Particle {
 impl Particle {
     pub fn new(pos: glam::Vec2, radius: f32) -> Self {
         Self {
-            color: glam::Vec4::new(pos.x / 512.0 * 0.5, pos.y / 512.0 * 0.5, 0.0, 0.0),
+            color: glam::Vec4::new(pos.x / 512.0 * 0.1, pos.y / 512.0 * 0.1, 0.0, 0.0),
             pos,
             old_pos: pos,
             acc: glam::Vec2::ZERO,
@@ -63,13 +60,17 @@ impl Particle {
     }
 
     pub fn update(&mut self, dt: f32) {
-        let particle_vel = self.pos - self.old_pos;
+        let velocity = self.velocity();
         self.old_pos = self.pos;
-        self.pos += particle_vel + self.acc * (dt * dt);
+        self.pos += velocity + self.acc * (dt * dt);
         self.acc = glam::Vec2::ZERO;
     }
 
     pub fn add_force(&mut self, force: glam::Vec2) {
         self.acc += force / self.mass;
+    }
+
+    pub fn velocity(&self) -> glam::Vec2 {
+        self.pos - self.old_pos
     }
 }

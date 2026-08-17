@@ -1,4 +1,4 @@
-use crate::{game::Particle, log_info};
+use crate::{game::Particle, log_info, log_warning};
 
 mod util;
 
@@ -10,6 +10,7 @@ pub struct GpuState {
     pub cascades_bind_group_layout: wgpu::BindGroupLayout,
     pub cascades_bind_group: wgpu::BindGroup,
     pub cascade_textures: Vec<(wgpu::Texture, wgpu::TextureView)>,
+    pub gen_sdf_compute_pipeline: wgpu::ComputePipeline,
     pub rc_compute_pipeline: wgpu::ComputePipeline,
     pub merge_compute_pipeline: wgpu::ComputePipeline,
     pub final_compute_pipeline: wgpu::ComputePipeline,
@@ -18,6 +19,7 @@ pub struct GpuState {
     pub pp_bind_group: wgpu::BindGroup,
     pub pp_compute_pipeline: wgpu::ComputePipeline,
     pub particle_storage_buffer: util::Buffer,
+    pub sdf_texture: wgpu::Texture,
     pub world_bind_group: wgpu::BindGroup,
 }
 
@@ -91,22 +93,110 @@ impl GpuState {
                 count: None,
             },
             &[],
-            32,
+            1024,
         );
+
+        let sdf_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: dimensions.0,
+                height: dimensions.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        });
+
+        let sdf_texture_bind_group_layout_entry = wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::ReadWrite,
+                format: wgpu::TextureFormat::R32Float,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        };
+
+        let sdf_texture_bind_group_entry = wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::TextureView(
+                &sdf_texture.create_view(&Default::default()),
+            ),
+        };
+
+        let color_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d {
+                width: dimensions.0,
+                height: dimensions.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::STORAGE_BINDING,
+            view_formats: &[],
+        });
+
+        let color_texture_bind_group_layout_entry = wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::StorageTexture {
+                access: wgpu::StorageTextureAccess::ReadWrite,
+                format: wgpu::TextureFormat::Rgba32Float,
+                view_dimension: wgpu::TextureViewDimension::D2,
+            },
+            count: None,
+        };
+
+        let color_texture_bind_group_entry = wgpu::BindGroupEntry {
+            binding: 2,
+            resource: wgpu::BindingResource::TextureView(
+                &color_texture.create_view(&Default::default()),
+            ),
+        };
 
         let world_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: None,
-                entries: &[particle_storage_buffer.bind_group_layout_entry],
+                entries: &[
+                    particle_storage_buffer.bind_group_layout_entry,
+                    sdf_texture_bind_group_layout_entry,
+                    color_texture_bind_group_layout_entry,
+                ],
             });
         let world_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &world_bind_group_layout,
-            entries: &[particle_storage_buffer.bind_group_entry()],
+            entries: &[
+                particle_storage_buffer.bind_group_entry(),
+                sdf_texture_bind_group_entry,
+                color_texture_bind_group_entry,
+            ],
         });
 
         let rc_shader_module =
             device.create_shader_module(wgpu::include_wgsl!("../../res/shaders/rc.wgsl"));
+
+        let gen_sdf_compute_pipeline = util::create_compute_pipeline(
+            &device,
+            util::ComputePipelineCreateInfo {
+                label: None,
+                shader_module: &rc_shader_module,
+                entry_point: Some("gen_sdf_texture"),
+                bind_group_layouts: &[
+                    Some(&cascades_bind_group_layout),
+                    Some(&world_bind_group_layout),
+                ],
+                immediate_size: 0,
+            },
+        );
 
         let rc_compute_pipeline = util::create_compute_pipeline(
             &device,
@@ -215,6 +305,7 @@ impl GpuState {
             cascades_bind_group_layout,
             cascades_bind_group,
             cascade_textures,
+            gen_sdf_compute_pipeline,
             rc_compute_pipeline,
             merge_compute_pipeline,
             final_compute_pipeline,
@@ -223,6 +314,7 @@ impl GpuState {
             pp_bind_group,
             pp_compute_pipeline,
             particle_storage_buffer,
+            sdf_texture,
             world_bind_group,
         };
     }

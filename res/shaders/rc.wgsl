@@ -8,6 +8,10 @@ var cascade_textures: binding_array<texture_storage_2d<rgba32float, read_write>,
 
 @group(1) @binding(0)
 var<storage> particles: array<Particle>;
+@group(1) @binding(1)
+var sdf_texture: texture_storage_2d<r32float, read_write>;
+@group(1) @binding(2)
+var color_texture: texture_storage_2d<rgba32float, read_write>;
 
 var<immediate> immediates: Immediates;
 
@@ -21,6 +25,23 @@ struct Immediates {
     cascade_index: u32,
     cursor_x: u32,
     cursor_y: u32
+}
+
+@compute @workgroup_size(8u, 8u, 1u)
+fn gen_sdf_texture(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let p = vec2<f32>(global_id.xy);
+    var d = 1e30f;
+    var color = vec4<f32>(0.0f);
+    for (var i = 0u; i < arrayLength(&particles); i++) {
+        let particle = particles[i];
+        let temp_d = sd_circle(p, particle.pos, particle.radius);
+        if temp_d < d {
+            d = temp_d;
+            color = particle.color;
+        }
+    }
+    textureStore(color_texture, global_id.xy, color);
+    textureStore(sdf_texture, global_id.xy, vec4<f32>(d, 0.0f, 0.0f, 0.0f));
 }
 
 @compute @workgroup_size(8u, 8u, 1u)
@@ -38,13 +59,6 @@ fn gen_cascades(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let start = probe_center + ray_dir * range.x;
     let end = probe_center + ray_dir * range.y;
     let radiance = cast_interval(start, end);
-
-    let debug_color = vec4<f32>(
-        (radiance.r * 0.5f) + ((f32(probe_coord.x) / f32(probe_size.x)) * 0.5f),
-        (radiance.g * 0.5f) + ((f32(probe_coord.y) / f32(probe_size.y)) * 0.5f),
-        (radiance.b * 0.5f),
-        1.0f
-    );
 
     textureStore(cascade_textures[immediates.cascade_index], global_id.xy, radiance);
 }
@@ -136,18 +150,10 @@ fn cast_interval(interval_start: vec2<f32>, interval_end: vec2<f32>) -> vec4<f32
     var radiance = vec4<f32>(0.0f, 0.0f, 0.0f, 1.0f);
 
     var t = 0.0f;
-    for (var i = 0u; i < 4u; i++) {
-        var d = 1e30f;
-        var color = vec4<f32>(0.0f);
-        for (var p = 0u; p < arrayLength(&particles); p++) {
-            let particle = particles[p];
-
-            let temp_d = sd_circle(interval_start + ray_dir * t, particle.pos, particle.radius);
-            if temp_d < d {
-                color = particle.color;
-                d = temp_d;
-            }
-        }
+    for (var i = 0u; i < 8u; i++) {
+        let tex_coord = vec2<u32>(interval_start + ray_dir * t);
+        let color = textureLoad(color_texture, tex_coord);
+        let d = textureLoad(sdf_texture, tex_coord).r;
 
         t += abs(d);
 
